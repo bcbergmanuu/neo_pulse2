@@ -29,7 +29,8 @@
 #define FREERTOS_CONFIG_H
 
 /*boris edit*/
-#define configUSE_SB_COMPLETED_CALLBACK          1
+//#define configUSE_SB_COMPLETED_CALLBACK          1
+
 /*-----------------------------------------------------------
  * Application specific definitions.
  *

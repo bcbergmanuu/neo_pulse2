@@ -20,7 +20,15 @@ Copyright (c) 2019 Analog Devices, Inc.  All rights reserved.
 /* Public Declarations */
 static void spiInit();
 
-static int32_t do_continuous_conversion(bool doVoltageConvertion);
+
+struct str_setting {
+	//everything in cylces
+	uint32_t on_time;
+	uint32_t off_time;
+	uint32_t periond;
+} xMessage;
+
+static int32_t do_continuous_conversion();
 uint32_t ad7124_app_initialize();
 
 

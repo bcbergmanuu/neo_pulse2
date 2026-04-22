@@ -236,7 +236,7 @@ int32_t ad7124_reset(struct ad7124_dev *dev)
 	ret = ad7124_wait_to_power_on(dev,
 				      dev->spi_rdy_poll_cnt);
 
-	sleep_ms(4);
+	vTaskDelay(pdMS_TO_TICKS(4));
 
 	return ret;
 }

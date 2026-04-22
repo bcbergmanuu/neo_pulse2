@@ -10,6 +10,7 @@ Copyright (c) 2019 Analog Devices, Inc.  All rights reserved.
 
 
 /* includes */
+#include "FreeRTOSConfig.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
@@ -32,7 +33,7 @@ Copyright (c) 2019 Analog Devices, Inc.  All rights reserved.
 #include "ad7124_console_app.h"
 #include "math.h"
 #include "hardware/gpio.h"
-
+#include "queue.h"
 
 #define AD7124_CHANNEL_COUNT 16
 
@@ -47,6 +48,7 @@ Copyright (c) 2019 Analog Devices, Inc.  All rights reserved.
 #define epsilon 0.001
 #define setting_amount 4
 
+QueueHandle_t xQueue1;
 
 /*
  * This is the 'live' AD7124 register map that is used by the driver
@@ -61,7 +63,10 @@ static struct ad7124_dev * pAd7124_dev = NULL;
    to use. */
 const UBaseType_t ad7124_xArrayIndex = 1;
 
-// Public Functions
+
+
+
+
 
 /*!
  * @brief      Initialize the AD7124 device and the SPI port as required
@@ -99,45 +104,86 @@ static void spiInit() {
 
 float newvalue_settings[setting_amount] = {0};
 float oldvalue_settings[setting_amount] = {-1, -1, -1, -1}; //only to be updated when newvalue is farther away than epsilon
-uint32_t timer_cycles[3]; //on_time_cycles, off_time_cycles, period_cycles. Each cycle = 20ms
+//uint32_t timer_cycles[3]; //on_time_cycles, off_time_cycles, period_cycles. Each cycle = 20ms
+
+void output_task(void * pvParameters) {
+	while(true) {
+		uint32_t ulNotificationValue = ulTaskNotifyTakeIndexed(0,
+                                                   pdTRUE,
+                                                   portMAX_DELAY);
+		printf("outputtask signal\n");
+
+		static struct str_setting curr_settings_dequeued = {0};
+		static uint32_t current_time = 0;	
+
+		if( xQueue1 != NULL) {
+			xQueueReceive( xQueue1,&(curr_settings_dequeued),( TickType_t ) 0 );
+		}
+
+		if(current_time < curr_settings_dequeued.on_time) {
+			//machine is on
+			//calculate cycles for one pulse period:
+			if(current_time % curr_settings_dequeued.periond == 0) {
+				gpio_put(pulse_gpio, true);
+			} else {
+				gpio_put(pulse_gpio, false);
+			}
+			current_time ++;
+		} 
+		else if (current_time >= curr_settings_dequeued.on_time && current_time < (curr_settings_dequeued.on_time + curr_settings_dequeued.off_time - 1))
+		{
+			gpio_put(pulse_gpio, false);
+			current_time ++;
+		}
+		else 
+		{
+			current_time = 0;
+			gpio_put(pulse_gpio, false);
+		} 
+		
+	}
+}
 
 void lcd_task(void * pvParameters ) {
 	lcd_init();	
 	lcd_clear();		
+	
 
 	while(true) {
 		
 		uint32_t ulNotificationValue = ulTaskNotifyTakeIndexed(0,
                                                    pdTRUE,
                                                    pdMS_TO_TICKS( 2000 ));
-		printf("lcd print signal received\n");
-		char stringbuf[6] = {0};
+		
+		static struct str_setting current_settings; 
 		for(size_t setting = 0; setting < setting_amount; setting++) {
-			if(fdim(oldvalue_settings[setting], newvalue_settings[setting]) > epsilon) {
+			if(fabsf(oldvalue_settings[setting] - newvalue_settings[setting]) > epsilon) {
 				oldvalue_settings[setting] = newvalue_settings[setting];
+				char stringbuf[8] = {0};
 				switch (setting) {
 					case 0:
 						goto_pos(0, 0); //timer on			
-						timer_cycles[setting] = (uint32_t)(newvalue_settings[setting]); //20ms < 2.5v < 50 000ms
-						sprintf(stringbuf, "%.2f", newvalue_settings[setting]*20);
+						current_settings.on_time = (uint32_t)(newvalue_settings[setting]*250); //0ms < 2.5v < 12 500ms
+						sprintf(stringbuf, "%5.2f s", ((float)current_settings.on_time)*0.02);
 						break;					
 					case 1:
-						goto_pos(10, 0); //timer 
-						timer_cycles[setting] = (uint32_t)(newvalue_settings[setting]); //20ms < 2.5v < 50 000ms
-						sprintf(stringbuf, "%.2f", newvalue_settings[setting]*20);
+						goto_pos(0, 1); //timer off
+						current_settings.off_time = (uint32_t)(newvalue_settings[setting]*250); //0ms < 2.5v < 12 500ms
+						sprintf(stringbuf, "%5.2f s", ((float)current_settings.off_time)*0.02);
 						break;
 					case 2:
-						goto_pos(0, 1); //period
-						uint32_t period = period_calc_ms(newvalue_settings[setting]);
-						timer_cycles[setting] = period;
-						sprintf(stringbuf, "%d", period);
+						goto_pos(8, 0); //period
+						uint32_t period_ms = (uint32_t)(39+pow(15.62, (newvalue_settings[setting]))); //20ms < 2.5v < 1000ms
+						current_settings.periond = period_ms/20;
+						sprintf(stringbuf, "%4d ms", current_settings.periond * 20);
 						break;
 					case 3:
-						goto_pos(10, 1);
-						sprintf(stringbuf, "%.2f", newvalue_settings[setting]*800);
+						goto_pos(8, 1);
+						sprintf(stringbuf, "%4.0f V", newvalue_settings[setting]*800); //0 < 2.5v < 2000
 						break;
 				}
-				
+
+				xQueueSend( xQueue1,( void * ) &current_settings, ( TickType_t ) 0 );
 				
 				lcd_print(stringbuf); 
 			}
@@ -147,7 +193,7 @@ void lcd_task(void * pvParameters ) {
 }
 
 
-TaskHandle_t ad7124_taskhandle, lcd1602a_taskhandle;
+TaskHandle_t ad7124_taskhandle, lcd1602a_taskhandle, output_taskhandle;
 
 void ad7124_task(void * pvParameters ) {
 	ad7124_app_initialize();	
@@ -181,35 +227,26 @@ void gpio_isr(uint gpio, uint32_t events) {
 }
 
 void set_isr_ad7124_rdy() {
-   gpio_init(d_out_rdy_pin);
-   	gpio_set_irq_callback(&gpio_isr);
+   	gpio_init(d_out_rdy_pin);
+	gpio_set_irq_callback(&gpio_isr);
    	// gpio_set_irq_enabled(d_out_rdy_pin, GPIO_IRQ_EDGE_FALL, true);
 	irq_set_enabled(IO_IRQ_BANK0, true);
 
    //gpio_set_irq_enabled_with_callback(d_out_rdy_pin, GPIO_IRQ_EDGE_FALL, true, &gpio_isr);
 }
 
-//between 20 and 1000 ms, potsetting between 0 and 2.5
-uint32_t cycle_period_calc_ms(float potsetting) {
-    return (uint32_t)0.05*(20+pow(15.7214, potsetting));
-}
+
+
 
 bool repeating_timer_callback(__unused struct repeating_timer *t) {
-	static uint32_t current_time = 0;	
-	if(current_time < timer_cycles[0]) {
-		//machine is on
-		//calculate cycles for one pulse period:
-		if(current_time % timer_cycles[2] == 0) {
-			gpio_put(pulse_gpio, true);
-		} else {
-			gpio_put(pulse_gpio, false);
-		}
-		
-	} else if (current_time > (timer_cycles[0] + timer_cycles[1])) {
-		current_time = 0;
-	}
+	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    configASSERT( output_taskhandle != NULL );
 
-	current_time ++;	
+	vTaskNotifyGiveIndexedFromISR( output_taskhandle,
+                                   0,
+                                   &xHigherPriorityTaskWoken );
+    
+    portYIELD_FROM_ISR( xHigherPriorityTaskWoken );	
 }
 
 
@@ -217,6 +254,15 @@ struct repeating_timer timer;
 
 
 int main() {
+
+	
+	xQueue1 = xQueueCreate(3, sizeof(xMessage) );
+	if( xQueue1 == NULL )
+    {
+        printf("queue cannot be created\n");
+		vTaskDelay(portMAX_DELAY);
+    }
+    
 
 	gpio_init(pulse_gpio);
     gpio_set_dir(pulse_gpio, GPIO_OUT);  
@@ -229,6 +275,7 @@ int main() {
 	
 	lcd1602_task_returned = xTaskCreate(lcd_task, "lcd1602a", 128, ( void * ) 1, tskIDLE_PRIORITY, &lcd1602a_taskhandle );
 	ad7124_task_returned = xTaskCreate(ad7124_task, "ad7124_task", 512, ( void * ) 1, tskIDLE_PRIORITY, &ad7124_taskhandle );
+	ad7124_task_returned = xTaskCreate(output_task, "ad7124_task", 128, ( void * ) 1, tskIDLE_PRIORITY, &output_taskhandle );
 	vTaskStartScheduler();
 	
 	return 0;
@@ -333,7 +380,7 @@ static int32_t do_continuous_conversion()
 			newvalue_settings[array_channel] = ad7124_convert_sample_to_voltage(pAd7124_dev, channel_read, sample_data);
 			array_channel++;
 			//update new values to array
-			printf("%.8f\n", ad7124_convert_sample_to_voltage(pAd7124_dev, channel_read, sample_data) );			
+			//printf("%.8f\n", ad7124_convert_sample_to_voltage(pAd7124_dev, channel_read, sample_data) );			
 		}
 	}	
 }
