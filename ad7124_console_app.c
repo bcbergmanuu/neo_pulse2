@@ -48,7 +48,7 @@ Copyright (c) 2019 Analog Devices, Inc.  All rights reserved.
 #define epsilon 0.001
 #define setting_amount 4
 
-QueueHandle_t xQueue1;
+QueueHandle_t queue_settings;
 
 /*
  * This is the 'live' AD7124 register map that is used by the driver
@@ -104,24 +104,25 @@ static void spiInit() {
 
 float newvalue_settings[setting_amount] = {0};
 float oldvalue_settings[setting_amount] = {-1, -1, -1, -1}; //only to be updated when newvalue is farther away than epsilon
-//uint32_t timer_cycles[3]; //on_time_cycles, off_time_cycles, period_cycles. Each cycle = 20ms
+
+volatile bool onstate = false, prev_on_state = false;
 
 void output_task(void * pvParameters) {
 	while(true) {
 		uint32_t ulNotificationValue = ulTaskNotifyTakeIndexed(0,
                                                    pdTRUE,
-                                                   portMAX_DELAY);
-		printf("outputtask signal\n");
+                                                   portMAX_DELAY);		
 
 		static struct str_setting curr_settings_dequeued = {0};
 		static uint32_t current_time = 0;	
 
-		if( xQueue1 != NULL) {
-			xQueueReceive( xQueue1,&(curr_settings_dequeued),( TickType_t ) 0 );
+		if( queue_settings != NULL) {
+			xQueueReceive( queue_settings,&(curr_settings_dequeued),( TickType_t ) 0 );
 		}
 
 		if(current_time < curr_settings_dequeued.on_time) {
 			//machine is on
+			onstate = true;
 			//calculate cycles for one pulse period:
 			if(current_time % curr_settings_dequeued.periond == 0) {
 				gpio_put(pulse_gpio, true);
@@ -134,9 +135,11 @@ void output_task(void * pvParameters) {
 		{
 			gpio_put(pulse_gpio, false);
 			current_time ++;
+			onstate = false;
 		}
 		else 
 		{
+			onstate = false;
 			current_time = 0;
 			gpio_put(pulse_gpio, false);
 		} 
@@ -148,6 +151,15 @@ void lcd_task(void * pvParameters ) {
 	lcd_init();	
 	lcd_clear();		
 	
+	//set prop
+	goto_pos(6,0);
+	lcd_print("s");
+	goto_pos(6,1);
+	lcd_print("s");
+	goto_pos(13,0);
+	lcd_print("ms");
+	goto_pos(13,1);
+	lcd_print("V");
 
 	while(true) {
 		
@@ -159,36 +171,43 @@ void lcd_task(void * pvParameters ) {
 		for(size_t setting = 0; setting < setting_amount; setting++) {
 			if(fabsf(oldvalue_settings[setting] - newvalue_settings[setting]) > epsilon) {
 				oldvalue_settings[setting] = newvalue_settings[setting];
-				char stringbuf[8] = {0};
+				char stringbuf[6] = {0};
 				switch (setting) {
 					case 0:
 						goto_pos(0, 0); //timer on			
 						current_settings.on_time = (uint32_t)(newvalue_settings[setting]*250); //0ms < 2.5v < 12 500ms
-						sprintf(stringbuf, "%5.2f s", ((float)current_settings.on_time)*0.02);
+						sprintf(stringbuf, "%5.2f", ((float)current_settings.on_time)*0.02);
 						break;					
 					case 1:
 						goto_pos(0, 1); //timer off
 						current_settings.off_time = (uint32_t)(newvalue_settings[setting]*250); //0ms < 2.5v < 12 500ms
-						sprintf(stringbuf, "%5.2f s", ((float)current_settings.off_time)*0.02);
+						sprintf(stringbuf, "%5.2f", ((float)current_settings.off_time)*0.02);
 						break;
 					case 2:
 						goto_pos(8, 0); //period
 						uint32_t period_ms = (uint32_t)(39+pow(15.62, (newvalue_settings[setting]))); //20ms < 2.5v < 1000ms
 						current_settings.periond = period_ms/20;
-						sprintf(stringbuf, "%4d ms", current_settings.periond * 20);
+						sprintf(stringbuf, "%4d", current_settings.periond * 20);
 						break;
 					case 3:
 						goto_pos(8, 1);
-						sprintf(stringbuf, "%4.0f V", newvalue_settings[setting]*800); //0 < 2.5v < 2000
+						sprintf(stringbuf, "%4.0f", newvalue_settings[setting]*800); //0 < 2.5v < 2000
 						break;
-				}
-
-				xQueueSend( xQueue1,( void * ) &current_settings, ( TickType_t ) 0 );
+				}				
 				
 				lcd_print(stringbuf); 
 			}
 		}
+		//update on_state
 		
+		if(onstate != prev_on_state) {
+			prev_on_state = onstate;
+			goto_pos(15, 1);
+			lcd_print(prev_on_state ? "+" : "-");
+		}
+		
+		
+		xQueueSend( queue_settings,( void * ) &current_settings, ( TickType_t ) 0 );
 	}
 }
 
@@ -256,8 +275,8 @@ struct repeating_timer timer;
 int main() {
 
 	
-	xQueue1 = xQueueCreate(3, sizeof(xMessage) );
-	if( xQueue1 == NULL )
+	queue_settings = xQueueCreate(3, sizeof(xMessage) );
+	if( queue_settings == NULL )
     {
         printf("queue cannot be created\n");
 		vTaskDelay(portMAX_DELAY);

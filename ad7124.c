@@ -272,7 +272,7 @@ int32_t ad7124_wait_for_spi_ready(struct ad7124_dev *dev,
 		
 	uint32_t ulNotificationValue = ulTaskNotifyTakeIndexed( *dev->ad7124_xArrayIndex,
                                                    pdTRUE,
-                                                   pdMS_TO_TICKS( 2000 ));		
+                                                   pdMS_TO_TICKS( 5 ));		
 	if( ulNotificationValue != 1 ) {
 		printf("err: rto %d\n", ulNotificationValue);
 	}	
