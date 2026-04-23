@@ -107,6 +107,11 @@ float oldvalue_settings[setting_amount] = {-1, -1, -1, -1}; //only to be updated
 
 volatile bool onstate = false, prev_on_state = false;
 
+int64_t delayed_pulse_switch_off(alarm_id_t id, __unused void *user_data) {	
+	gpio_put(pulse_gpio, false);
+	return 0;
+}
+
 void output_task(void * pvParameters) {
 	while(true) {
 		uint32_t ulNotificationValue = ulTaskNotifyTakeIndexed(0,
@@ -126,22 +131,24 @@ void output_task(void * pvParameters) {
 			//calculate cycles for one pulse period:
 			if(current_time % curr_settings_dequeued.periond == 0) {
 				gpio_put(pulse_gpio, true);
-			} else {
-				gpio_put(pulse_gpio, false);
+				if(add_alarm_in_us(50, delayed_pulse_switch_off, NULL, false) < 0) {
+					printf("ERR: alarm could not be set");
+					sleep_us(50);
+					gpio_put(pulse_gpio, false);
+				};
 			}
 			current_time ++;
 		} 
 		else if (current_time >= curr_settings_dequeued.on_time && current_time < (curr_settings_dequeued.on_time + curr_settings_dequeued.off_time - 1))
 		{
-			gpio_put(pulse_gpio, false);
+
 			current_time ++;
 			onstate = false;
 		}
 		else 
-		{
-			onstate = false;
+		{			
 			current_time = 0;
-			gpio_put(pulse_gpio, false);
+
 		} 
 		
 	}
@@ -174,21 +181,21 @@ void lcd_task(void * pvParameters ) {
 				char stringbuf[6] = {0};
 				switch (setting) {
 					case 0:
-						goto_pos(0, 0); //timer on			
-						current_settings.on_time = (uint32_t)(newvalue_settings[setting]*250); //0ms < 2.5v < 12 500ms
-						sprintf(stringbuf, "%5.2f", ((float)current_settings.on_time)*0.02);
-						break;					
-					case 1:
-						goto_pos(0, 1); //timer off
-						current_settings.off_time = (uint32_t)(newvalue_settings[setting]*250); //0ms < 2.5v < 12 500ms
-						sprintf(stringbuf, "%5.2f", ((float)current_settings.off_time)*0.02);
-						break;
-					case 2:
 						goto_pos(8, 0); //period
 						uint32_t period_ms = (uint32_t)(39+pow(15.62, (newvalue_settings[setting]))); //20ms < 2.5v < 1000ms
 						current_settings.periond = period_ms/20;
 						sprintf(stringbuf, "%4d", current_settings.periond * 20);
 						break;
+					case 1:
+						goto_pos(0, 0); //timer on			
+						current_settings.on_time = (uint32_t)(newvalue_settings[setting]*250); //0ms < 2.5v < 12 500ms
+						sprintf(stringbuf, "%5.2f", ((float)current_settings.on_time)*0.02);
+						break;					
+					case 2:
+						goto_pos(0, 1); //timer off
+						current_settings.off_time = (uint32_t)(newvalue_settings[setting]*250); //0ms < 2.5v < 12 500ms
+						sprintf(stringbuf, "%5.2f", ((float)current_settings.off_time)*0.02);
+						break;				
 					case 3:
 						goto_pos(8, 1);
 						sprintf(stringbuf, "%4.0f", newvalue_settings[setting]*800); //0 < 2.5v < 2000

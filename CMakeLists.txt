@@ -51,7 +51,7 @@ include($ENV{FREERTOS_KERNEL_PATH}/portable/ThirdParty/GCC/RP2040/FreeRTOS_Kerne
 
 
 # Modify the below lines to enable/disable output over UART/USB
-pico_enable_stdio_uart(neopulse2 1)
+pico_enable_stdio_uart(neopulse2 0)
 pico_enable_stdio_usb(neopulse2 0)
 
 # Add the standard library to the build
